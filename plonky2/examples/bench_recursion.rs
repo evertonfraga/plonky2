@@ -23,7 +23,7 @@ use plonky2::hash::hash_types::RichField;
 use plonky2::iop::witness::{PartialWitness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2::plonk::circuit_data::{CircuitConfig, CommonCircuitData, VerifierOnlyCircuitData};
-use plonky2::plonk::config::{AlgebraicHasher, GenericConfig, PoseidonGoldilocksConfig};
+use plonky2::plonk::config::{AlgebraicHasher, GenericConfig, Poseidon2GoldilocksConfig};
 use plonky2::plonk::proof::{CompressedProofWithPublicInputs, ProofWithPublicInputs};
 use plonky2::plonk::prover::prove;
 use plonky2::util::serialization::DefaultGateSerializer;
@@ -297,7 +297,7 @@ pub fn benchmark_function(
     lookup_type: u64,
 ) -> Result<()> {
     const D: usize = 2;
-    type C = PoseidonGoldilocksConfig;
+    type C = Poseidon2GoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
 
     let dummy_proof_function = match lookup_type {
@@ -372,7 +372,21 @@ fn main() -> Result<()> {
     let num_cpus = num_cpus::get();
     let threads = options.threads.unwrap_or(num_cpus..=num_cpus);
 
-    let config = CircuitConfig::standard_recursion_config();
+    let config = {
+        use plonky2::fri::FriConfig;
+        use plonky2::fri::reduction_strategies::FriReductionStrategy;
+        CircuitConfig {
+            num_wires: 136, num_routed_wires: 80, num_constants: 2,
+            use_base_arithmetic_gate: true, security_bits: 100,
+            num_challenges: 2, zero_knowledge: false, max_quotient_degree_factor: 8,
+            fri_config: FriConfig {
+                rate_bits: 3, cap_height: 4, proof_of_work_bits: 16,
+                reduction_strategy: FriReductionStrategy::ConstantArityBits(4, 5),
+                num_query_rounds: 28,
+            },
+            optimization_flags: (1 << 0) + (1 << 2) + (1 << 3) + (1 << 4) + (1 << 5),
+        }
+    };
 
     for log2_inner_size in options.size {
         // Since the `size` is most likely to be an unbounded range we make that the outer iterator.
