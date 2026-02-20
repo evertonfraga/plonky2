@@ -403,6 +403,16 @@ impl Poseidon2 for F {
             crate::hash::arch::aarch64::poseidon_goldilocks_neon::sbox_layer(state);
         }
     }
+
+    #[inline]
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon", target_feature = "sve2"))]
+    fn sbox(state: &mut [Self; WIDTH]) {
+        unsafe {
+            let state_f = &mut *(state as *mut [Self; WIDTH]
+                as *mut [crate::field::goldilocks_field::GoldilocksField; WIDTH]);
+            crate::hash::arch::aarch64::poseidon2_goldilocks_sve2::sbox_layer_sve2(state_f);
+        }
+    }
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq)]
