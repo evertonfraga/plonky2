@@ -29,5 +29,6 @@ categories = ["cryptography"]
 too_long_first_doc_paragraph = "allow"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 incremental = false
+codegen-units = 1
