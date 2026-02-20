@@ -391,9 +391,34 @@ impl Poseidon2 for F {
     }
 
     #[inline]
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "neon"),
+        all(target_arch = "x86_64", target_feature = "avx512f",
+            target_feature = "avx512bw", target_feature = "avx512cd",
+            target_feature = "avx512dq", target_feature = "avx512vl"),
+    )))]
     fn sbox(state: &mut [Self; WIDTH]) {
         state.iter_mut().for_each(|a| *a = Self::sbox_p(a));
+    }
+
+    #[inline]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f",
+              target_feature = "avx512bw", target_feature = "avx512cd",
+              target_feature = "avx512dq", target_feature = "avx512vl"))]
+    fn sbox(state: &mut [Self; WIDTH]) {
+        use plonky2_field::packable::Packable;
+        use plonky2_field::packed::PackedField;
+        use plonky2_field::ops::Square;
+        type P = <F as Packable>::Packing;
+        let v = P::from_slice(&state[..P::WIDTH]);
+        let v2 = v.square();
+        let v4 = v2.square();
+        let v3 = *v * v2;
+        let v7 = v3 * v4;
+        state[..P::WIDTH].copy_from_slice(v7.as_slice());
+        for i in P::WIDTH..WIDTH {
+            state[i] = Self::sbox_p(&state[i]);
+        }
     }
 
     #[inline(always)]
