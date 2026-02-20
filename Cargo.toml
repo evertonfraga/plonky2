@@ -31,3 +31,4 @@ too_long_first_doc_paragraph = "allow"
 [profile.release]
 lto = "thin"
 incremental = false
+opt-level = "s"
