@@ -1,3 +1,4 @@
+#![feature(portable_simd)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
 #![deny(rustdoc::broken_intra_doc_links)]

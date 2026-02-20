@@ -392,8 +392,38 @@ impl Poseidon2 for F {
 
     #[inline]
     #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+
+    #[inline]
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
     fn sbox(state: &mut [Self; WIDTH]) {
-        state.iter_mut().for_each(|a| *a = Self::sbox_p(a));
+        use std::simd::{Simd, cmp::SimdPartialOrd, num::SimdUint};
+        type V = Simd<u64, 4>;
+        const EPS: u64 = 0xFFFFFFFF;
+        #[inline(always)]
+        fn gl_mul(a: V, b: V) -> V {
+            let eps = V::splat(EPS);
+            let mask = V::splat(0xFFFFFFFF_u64);
+            let a_lo = a & mask; let a_hi = a >> V::splat(32);
+            let b_lo = b & mask; let b_hi = b >> V::splat(32);
+            let ll = a_lo * b_lo;
+            let mid = a_lo * b_hi + a_hi * b_lo;
+            let hh = a_hi * b_hi;
+            let hi = (mid >> V::splat(32)) + hh;
+            let lo = ll + ((mid & eps) << V::splat(32));
+            let hi_hi = hi >> V::splat(32);
+            let hi_lo = hi & eps;
+            let t = lo.wrapping_sub(hi_hi);
+            let t = t + lo.simd_lt(hi_hi).select(eps, V::splat(0));
+            t.wrapping_add(hi_lo * eps)
+        }
+        for chunk in state.chunks_exact_mut(4) {
+            let v = V::from_array([chunk[0].0, chunk[1].0, chunk[2].0, chunk[3].0]);
+            let v2 = gl_mul(v, v);
+            let v4 = gl_mul(v2, v2);
+            let v7 = gl_mul(gl_mul(v, v2), v4);
+            let arr = v7.to_array();
+            for (i, x) in arr.iter().enumerate() { chunk[i] = F(*x); }
+        }
     }
 
     #[inline(always)]
