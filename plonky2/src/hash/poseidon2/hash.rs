@@ -90,10 +90,9 @@ pub trait Poseidon2: PrimeField64 {
     #[inline]
     #[unroll::unroll_for_loops]
     fn internal_linear_layer(state: &mut [Self; WIDTH]) {
-        let sum = sum_12(state); // hard coded for WIDTH = 12
+        let sum = sum_12(state);
         for i in 0..WIDTH {
-            state[i] =
-                sum.multiply_accumulate(state[i], Self::from_canonical_u64(MATRIX_DIAG_12_U64[i]));
+            state[i] = sum.multiply_accumulate(state[i], Self::from_canonical_u64(MATRIX_DIAG_12_U64[i]));
         }
     }
 
@@ -426,6 +425,37 @@ impl Poseidon2 for F {
     fn sbox(state: &mut [Self; WIDTH]) {
         unsafe {
             crate::hash::arch::aarch64::poseidon_goldilocks_neon::sbox_layer(state);
+        }
+    }
+
+    #[inline]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f",
+              target_feature = "avx512bw", target_feature = "avx512cd",
+              target_feature = "avx512dq", target_feature = "avx512vl"))]
+    fn internal_linear_layer(state: &mut [Self; WIDTH]) {
+        use plonky2_field::packable::Packable;
+        use plonky2_field::packed::PackedField;
+        type P = <F as Packable>::Packing; // Avx512GoldilocksField (8-wide)
+        let sum = sum_12(state);
+        // state and F are the same concrete type here (Self = F = GoldilocksField)
+        let sum_arr = [sum; 8];
+        let sum_packed = P::from_slice(&sum_arr);
+        let diag_arr = [
+            F::from_canonical_u64(MATRIX_DIAG_12_U64[0]),
+            F::from_canonical_u64(MATRIX_DIAG_12_U64[1]),
+            F::from_canonical_u64(MATRIX_DIAG_12_U64[2]),
+            F::from_canonical_u64(MATRIX_DIAG_12_U64[3]),
+            F::from_canonical_u64(MATRIX_DIAG_12_U64[4]),
+            F::from_canonical_u64(MATRIX_DIAG_12_U64[5]),
+            F::from_canonical_u64(MATRIX_DIAG_12_U64[6]),
+            F::from_canonical_u64(MATRIX_DIAG_12_U64[7]),
+        ];
+        let diag = P::from_slice(&diag_arr);
+        let state_packed = P::from_slice(&state[..8]);
+        let result = *sum_packed + *state_packed * *diag;
+        state[..8].copy_from_slice(result.as_slice());
+        for i in 8..WIDTH {
+            state[i] = sum.multiply_accumulate(state[i], F::from_canonical_u64(MATRIX_DIAG_12_U64[i]));
         }
     }
 }
