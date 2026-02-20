@@ -428,6 +428,63 @@ impl Poseidon2 for F {
             crate::hash::arch::aarch64::poseidon_goldilocks_neon::sbox_layer(state);
         }
     }
+
+    #[inline]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f",
+              target_feature = "avx512bw", target_feature = "avx512cd",
+              target_feature = "avx512dq", target_feature = "avx512vl"))]
+    fn external_linear_layer(state: &mut [Self; WIDTH]) {
+        // M4 on each group of 4 (scalar — horizontal ops are expensive on AVX-512)
+        let mut s = [0u128; WIDTH];
+        for i in 0..WIDTH { s[i] = state[i].to_noncanonical_u64() as u128; }
+        for g in 0..3 {
+            let b = g * 4;
+            let t01 = s[b] + s[b+1]; let t23 = s[b+2] + s[b+3];
+            let t0123 = t01 + t23;
+            let x0 = s[b]; let x2 = s[b+2];
+            s[b]   = t0123 + t01 + s[b+1];
+            s[b+1] = t0123 + s[b+1] + x2 + x2;
+            s[b+2] = t0123 + t23 + s[b+3];
+            s[b+3] = t0123 + s[b+3] + x0 + x0;
+        }
+        // Outer circulant: vectorize with AVX-512
+        // sums[k] = s[k] + s[k+4] + s[k+8] for k in 0..4
+        // s[i] += sums[i % 4] for i in 0..12
+        // Represent u128 as (lo: u64, hi: u64); values bounded to 96 bits (hi < 2^32)
+        unsafe {
+            use core::arch::x86_64::*;
+            let lo: [u64; 12] = core::array::from_fn(|i| s[i] as u64);
+            let hi: [u64; 12] = core::array::from_fn(|i| (s[i] >> 64) as u64);
+            // Load lo[0..8] and lo[4..12] — compute column sums for lo
+            // sums_lo[k] = lo[k] + lo[k+4] + lo[k+8] for k in 0..4
+            // Use 4-wide (256-bit) since we only need 4 sums
+            let a_lo = _mm256_loadu_si256(lo.as_ptr() as *const __m256i);      // lo[0..4]
+            let b_lo = _mm256_loadu_si256(lo[4..].as_ptr() as *const __m256i); // lo[4..8]
+            let c_lo = _mm256_loadu_si256(lo[8..].as_ptr() as *const __m256i); // lo[8..12]
+            let sums_lo = _mm256_add_epi64(_mm256_add_epi64(a_lo, b_lo), c_lo);
+            let a_hi = _mm256_loadu_si256(hi.as_ptr() as *const __m256i);
+            let b_hi = _mm256_loadu_si256(hi[4..].as_ptr() as *const __m256i);
+            let c_hi = _mm256_loadu_si256(hi[8..].as_ptr() as *const __m256i);
+            let sums_hi = _mm256_add_epi64(_mm256_add_epi64(a_hi, b_hi), c_hi);
+            // Add sums back: s[i] += sums[i % 4]
+            // Process 3 groups of 4 using the same sums vector
+            let mut lo_out = lo;
+            let mut hi_out = hi;
+            for g in 0..3 {
+                let b = g * 4;
+                let sg_lo = _mm256_loadu_si256(lo_out[b..].as_ptr() as *const __m256i);
+                let sg_hi = _mm256_loadu_si256(hi_out[b..].as_ptr() as *const __m256i);
+                _mm256_storeu_si256(lo_out[b..].as_mut_ptr() as *mut __m256i,
+                    _mm256_add_epi64(sg_lo, sums_lo));
+                _mm256_storeu_si256(hi_out[b..].as_mut_ptr() as *mut __m256i,
+                    _mm256_add_epi64(sg_hi, sums_hi));
+            }
+            for i in 0..WIDTH {
+                let val = (lo_out[i] as u128) | ((hi_out[i] as u128) << 64);
+                state[i] = F::from_noncanonical_u128_with_96_bits(val);
+            }
+        }
+    }
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq)]
