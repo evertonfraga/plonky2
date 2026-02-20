@@ -400,7 +400,8 @@ impl Poseidon2 for F {
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
     fn sbox(state: &mut [Self; WIDTH]) {
         unsafe {
-            crate::hash::arch::aarch64::poseidon_goldilocks_neon::sbox_layer(state);
+            let state_u64 = core::mem::transmute::<&mut [Self; WIDTH], &mut [u64; WIDTH]>(state);
+            crate::hash::arch::aarch64::poseidon2_goldilocks_neon::sbox_layer_neon(state_u64);
         }
     }
 }
