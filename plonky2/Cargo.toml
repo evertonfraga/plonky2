@@ -12,6 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
+mimalloc = ["dep:mimalloc"]
 jemalloc = ["dep:jemallocator"]
 default = ["gate_testing", "parallel", "rand_chacha", "std", "timing"]
 gate_testing = []
@@ -20,6 +21,7 @@ std = ["anyhow/std", "rand/std", "itertools/use_std"]
 timing = ["std", "dep:web-time"]
 
 [dependencies]
+mimalloc = { version = "0.1", optional = true }
 jemallocator = { version = "0.5.0", optional = true }
 ahash = { workspace = true }
 anyhow = { workspace = true }

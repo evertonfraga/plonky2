@@ -36,6 +36,12 @@ use rand_chacha::ChaCha8Rng;
 use structopt::StructOpt;
 #[cfg(feature = "jemalloc")]
 use jemallocator::Jemalloc;
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
