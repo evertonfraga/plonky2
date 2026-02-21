@@ -391,17 +391,34 @@ impl Poseidon2 for F {
     }
 
     #[inline]
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+    // SVE2: native 64-bit multiply, highest priority on aarch64
+    #[cfg(all(target_arch = "aarch64", target_feature = "sve2"))]
     fn sbox(state: &mut [Self; WIDTH]) {
-        state.iter_mut().for_each(|a| *a = Self::sbox_p(a));
+        unsafe {
+            let state_f = &mut *(state as *mut [Self; WIDTH]
+                as *mut [crate::field::goldilocks_field::GoldilocksField; WIDTH]);
+            crate::hash::arch::aarch64::poseidon2_goldilocks_sve2::sbox_layer_sve2(state_f);
+        }
     }
 
-    #[inline(always)]
-    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    // NEON fallback (no SVE2): scalar sbox_layer
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon",
+              not(target_feature = "sve2")))]
     fn sbox(state: &mut [Self; WIDTH]) {
         unsafe {
             crate::hash::arch::aarch64::poseidon_goldilocks_neon::sbox_layer(state);
         }
+    }
+
+    // Non-ARM, non-AVX-512: scalar
+    #[cfg(not(any(
+        target_arch = "aarch64",
+        all(target_arch = "x86_64", target_feature = "avx512f",
+            target_feature = "avx512bw", target_feature = "avx512cd",
+            target_feature = "avx512dq", target_feature = "avx512vl"),
+    )))]
+    fn sbox(state: &mut [Self; WIDTH]) {
+        state.iter_mut().for_each(|a| *a = Self::sbox_p(a));
     }
 }
 
