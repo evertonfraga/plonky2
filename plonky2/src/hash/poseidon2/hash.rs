@@ -91,9 +91,13 @@ pub trait Poseidon2: PrimeField64 {
     #[unroll::unroll_for_loops]
     fn internal_linear_layer(state: &mut [Self; WIDTH]) {
         let sum = sum_12(state); // hard coded for WIDTH = 12
+        // Safety: i < WIDTH = 12 = state.len()
         for i in 0..WIDTH {
-            state[i] =
-                sum.multiply_accumulate(state[i], Self::from_canonical_u64(MATRIX_DIAG_12_U64[i]));
+            unsafe {
+                *state.get_unchecked_mut(i) =
+                    sum.multiply_accumulate(*state.get_unchecked(i),
+                        Self::from_canonical_u64(*MATRIX_DIAG_12_U64.get_unchecked(i)));
+            }
         }
     }
 
@@ -307,38 +311,26 @@ pub trait Poseidon2: PrimeField64 {
 #[inline]
 #[unroll::unroll_for_loops]
 fn external_linear_layer_u128(state: &mut [u128; WIDTH]) {
-    // First, we apply M_4 to each consecutive four elements of the state.
-    // In Appendix B's terminology, this replaces each x_i with x_i'.
-    for i in (0..WIDTH).step_by(4) {
-        // Multiply a 4-element vector x by:
-        // [ 2 3 1 1 ]
-        // [ 1 2 3 1 ]
-        // [ 1 1 2 3 ]
-        // [ 3 1 1 2 ].
-        let t01 = state[i] + state[i + 1];
-        let t23 = state[i + 2] + state[i + 3];
-        let t0123 = t01 + t23;
-
-        let x0 = state[i];
-        let x2 = state[i + 2];
-
-        state[i] = t0123 + t01 + state[i + 1]; // 2*x[0] + 3*x[1] + x[2] + x[3]
-        state[i + 1] = t0123 + state[i + 1] + x2 + x2; // x[0] + 2*x[1] + 3*x[2] + x[3]
-        state[i + 2] = t0123 + t23 + state[i + 3]; // x[0] + x[1] + 2*x[2] + 3*x[3]
-        state[i + 3] = t0123 + state[i + 3] + x0 + x0; // 3*x[0] + x[1] + x[2] + 2*x[3]
-    }
-    // Now, we apply the outer circulant matrix (to compute the y_i values).
-
-    // We first precompute the four sums of every four elements.
-    let mut sums = [0u128; 4];
-    for i in 0..4 {
-        sums[i] = state[i] + state[i + 4] + state[i + 8];
-    }
-
-    // The formula for each y_i involves 2x_i' term and x_j' terms for each j that equals i mod 4.
-    // In other words, we can add a single copy of x_i' to the appropriate one of our precomputed sums
-    for i in 0..WIDTH {
-        state[i] += sums[i % 4];
+    // Safety: all indices are statically bounded by WIDTH=12
+    unsafe {
+        for i in (0..WIDTH).step_by(4) {
+            let t01 = state.get_unchecked(i) + state.get_unchecked(i + 1);
+            let t23 = state.get_unchecked(i + 2) + state.get_unchecked(i + 3);
+            let t0123 = t01 + t23;
+            let x0 = *state.get_unchecked(i);
+            let x2 = *state.get_unchecked(i + 2);
+            *state.get_unchecked_mut(i)     = t0123 + t01 + state.get_unchecked(i + 1);
+            *state.get_unchecked_mut(i + 1) = t0123 + state.get_unchecked(i + 1) + x2 + x2;
+            *state.get_unchecked_mut(i + 2) = t0123 + t23 + state.get_unchecked(i + 3);
+            *state.get_unchecked_mut(i + 3) = t0123 + state.get_unchecked(i + 3) + x0 + x0;
+        }
+        let mut sums = [0u128; 4];
+        for i in 0..4 {
+            *sums.get_unchecked_mut(i) = state.get_unchecked(i) + state.get_unchecked(i + 4) + state.get_unchecked(i + 8);
+        }
+        for i in 0..WIDTH {
+            *state.get_unchecked_mut(i) += sums.get_unchecked(i % 4);
+        }
     }
 }
 
