@@ -28,7 +28,7 @@ pub trait Poseidon2: PrimeField64 {
         state
     }
 
-    #[inline]
+    #[inline(always)]
     #[unroll::unroll_for_loops]
     fn full_rounds(state: &mut [Self; WIDTH], start: usize) {
         for r in start..(start + ROUNDS_F_HALF) {
@@ -38,7 +38,7 @@ pub trait Poseidon2: PrimeField64 {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     #[unroll::unroll_for_loops]
     fn partial_rounds(state: &mut [Self; WIDTH]) {
         for r in 0..ROUNDS_P {
@@ -48,7 +48,7 @@ pub trait Poseidon2: PrimeField64 {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     #[unroll::unroll_for_loops]
     fn external_linear_layer(state: &mut [Self; WIDTH]) {
         let mut state_u128: [u128; WIDTH] = [0u128; WIDTH];
@@ -402,6 +402,7 @@ impl Poseidon2 for F {
     }
 
     #[inline]
+    #[inline(always)]
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f",
               target_feature = "avx512bw", target_feature = "avx512cd",
               target_feature = "avx512dq", target_feature = "avx512vl"))]
