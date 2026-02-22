@@ -50,6 +50,7 @@ pub trait Poseidon2: PrimeField64 {
 
     #[inline]
     #[unroll::unroll_for_loops]
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
     fn external_linear_layer(state: &mut [Self; WIDTH]) {
         let mut state_u128: [u128; WIDTH] = [0u128; WIDTH];
         for i in 0..WIDTH {
@@ -58,6 +59,15 @@ pub trait Poseidon2: PrimeField64 {
         external_linear_layer_u128(&mut state_u128);
         for i in 0..WIDTH {
             state[i] = Self::from_noncanonical_u128_with_96_bits(state_u128[i]);
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    fn external_linear_layer(state: &mut [Self; WIDTH]) {
+        unsafe {
+            let state_f = &mut *(state as *mut [Self; WIDTH]
+                as *mut [crate::field::goldilocks_field::GoldilocksField; WIDTH]);
+            crate::hash::arch::aarch64::poseidon2_goldilocks_neon::external_linear_layer_neon(state_f);
         }
     }
 
