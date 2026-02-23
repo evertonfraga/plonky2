@@ -21,6 +21,15 @@ fn compile_cuda() {
     assert!(status.success(), "nvcc compilation failed");
     println!("cargo:rustc-link-search=native={}", out_dir);
     println!("cargo:rustc-link-lib=static=poseidon2_gpu");
+    // Find CUDA lib path dynamically
+    let cuda_lib = std::process::Command::new("sh")
+        .args(["-c", "find /usr/local/cuda*/targets/*/lib -name 'libcudart.so' 2>/dev/null | head -1 | xargs dirname"])
+        .output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/usr/local/cuda/lib64".to_string());
+    println!("cargo:rustc-link-search=native={}", cuda_lib);
     println!("cargo:rustc-link-lib=cudart");
     println!("cargo:rerun-if-changed=src/hash/poseidon2/poseidon2_gpu.cu");
 }
