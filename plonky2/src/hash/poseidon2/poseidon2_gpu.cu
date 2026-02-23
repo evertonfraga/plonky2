@@ -146,8 +146,8 @@ extern "C" __global__ void poseidon2_hash_no_pad_batch(
     }
     uint32_t rem=leaf_len-pos;
     if (rem>0) {
-        for (uint32_t i=0;i<rem;i++) s[i]=leaf[pos+i];  // set remaining
-        for (uint32_t i=rem;i<8;i++) s[i]=0;             // zero unused rate slots
+        // set_from_slice: only overwrite s[0..rem], preserve s[rem..WIDTH] from previous permutation
+        for (uint32_t i=0;i<rem;i++) s[i]=leaf[pos+i];
         permute(s);
     }
     #pragma unroll
