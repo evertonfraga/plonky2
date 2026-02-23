@@ -126,6 +126,7 @@ pub(crate) fn fill_digests_buf<F: RichField, H: Hasher<F>>(
         cap_buf
             .par_iter_mut()
             .zip(leaves)
+            .with_min_len(1)
             .for_each(|(cap_buf, leaf)| {
                 cap_buf.write(H::hash_or_noop(leaf));
             });
