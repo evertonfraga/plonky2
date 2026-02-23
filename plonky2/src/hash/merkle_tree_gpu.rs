@@ -4,6 +4,7 @@ use plonky2_field::types::PrimeField64;
 use plonky2_maybe_rayon::*;
 use crate::hash::hash_types::{RichField, NUM_HASH_OUT_ELTS};
 use crate::hash::merkle_tree::fill_subtree_with_hashes;
+use crate::plonk::config::GenericHashOut;
 use crate::plonk::config::Hasher;
 
 const GPU_LEAF_THRESHOLD: usize = 512;
