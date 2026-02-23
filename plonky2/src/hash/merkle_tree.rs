@@ -112,6 +112,28 @@ pub(crate) fn fill_subtree<F: RichField, H: Hasher<F>>(
     }
 }
 
+pub(crate) fn fill_subtree_with_hashes<F: RichField, H: Hasher<F>>(
+    digests_buf: &mut [MaybeUninit<H::Hash>],
+    leaf_hashes: &[H::Hash],
+) -> H::Hash {
+    assert_eq!(leaf_hashes.len(), digests_buf.len() / 2 + 1);
+    if digests_buf.is_empty() {
+        leaf_hashes[0]
+    } else {
+        let (left_digests_buf, right_digests_buf) = digests_buf.split_at_mut(digests_buf.len() / 2);
+        let (left_digest_mem, left_digests_buf) = left_digests_buf.split_last_mut().unwrap();
+        let (right_digest_mem, right_digests_buf) = right_digests_buf.split_first_mut().unwrap();
+        let (left_hashes, right_hashes) = leaf_hashes.split_at(leaf_hashes.len() / 2);
+        let (left_digest, right_digest) = plonky2_maybe_rayon::join(
+            || fill_subtree_with_hashes::<F, H>(left_digests_buf, left_hashes),
+            || fill_subtree_with_hashes::<F, H>(right_digests_buf, right_hashes),
+        );
+        left_digest_mem.write(left_digest);
+        right_digest_mem.write(right_digest);
+        H::two_to_one(left_digest, right_digest)
+    }
+}
+
 pub(crate) fn fill_digests_buf<F: RichField, H: Hasher<F>>(
     digests_buf: &mut [MaybeUninit<H::Hash>],
     cap_buf: &mut [MaybeUninit<H::Hash>],
@@ -207,6 +229,9 @@ impl<F: RichField, H: Hasher<F>> MerkleTree<F, H> {
 
         let digests_buf = capacity_up_to_mut(&mut digests, num_digests);
         let cap_buf = capacity_up_to_mut(&mut cap, len_cap);
+        #[cfg(feature = "gpu")]
+        crate::hash::merkle_tree_gpu::fill_digests_buf_gpu::<F, H>(digests_buf, cap_buf, &leaves[..], cap_height);
+        #[cfg(not(feature = "gpu"))]
         fill_digests_buf::<F, H>(digests_buf, cap_buf, &leaves[..], cap_height);
 
         unsafe {
