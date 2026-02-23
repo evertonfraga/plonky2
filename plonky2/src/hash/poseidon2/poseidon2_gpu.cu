@@ -137,14 +137,19 @@ extern "C" __global__ void poseidon2_hash_no_pad_batch(
     if (idx>=batch) return;
     const uint64_t* leaf = in + idx*leaf_len;
     uint64_t s[WIDTH] = {0};
+    // Sponge: set_from_slice (overwrite rate portion), not add
     uint32_t pos=0;
     while (pos+8<=leaf_len) {
         #pragma unroll
-        for (int i=0;i<8;i++) s[i]=gl_add(s[i],leaf[pos+i]);
+        for (int i=0;i<8;i++) s[i]=leaf[pos+i];  // set, not add
         permute(s); pos+=8;
     }
-    for (uint32_t i=0;i<leaf_len-pos;i++) s[i]=gl_add(s[i],leaf[pos+i]);
-    if (leaf_len-pos>0) permute(s);
+    uint32_t rem=leaf_len-pos;
+    if (rem>0) {
+        for (uint32_t i=0;i<rem;i++) s[i]=leaf[pos+i];  // set remaining
+        for (uint32_t i=rem;i<8;i++) s[i]=0;             // zero unused rate slots
+        permute(s);
+    }
     #pragma unroll
     for (int i=0;i<NUM_HASH_OUT;i++) out[idx*NUM_HASH_OUT+i]=s[i];
 }
