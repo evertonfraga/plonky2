@@ -101,6 +101,14 @@ pub(crate) fn fill_subtree<F: RichField, H: Hasher<F>>(
         // Split `leaves` between both children.
         let (left_leaves, right_leaves) = leaves.split_at(leaves.len() / 2);
 
+        // Prefetch right subtree's first leaf to hide memory latency
+        if let Some(first_leaf) = right_leaves.first() {
+            if let Some(first_elem) = first_leaf.first() {
+                let ptr = first_elem as *const F as *const i8;
+                #[cfg(target_arch = "x86_64")]
+                unsafe { core::arch::x86_64::_mm_prefetch(ptr, core::arch::x86_64::_MM_HINT_T0); }
+            }
+        }
         let (left_digest, right_digest) = plonky2_maybe_rayon::join(
             || fill_subtree::<F, H>(left_digests_buf, left_leaves),
             || fill_subtree::<F, H>(right_digests_buf, right_leaves),
