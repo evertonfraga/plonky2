@@ -13,6 +13,7 @@ categories.workspace = true
 
 [features]
 jemalloc = ["dep:jemallocator"]
+gpu = []
 default = ["gate_testing", "parallel", "rand_chacha", "std", "timing"]
 gate_testing = []
 parallel = ["hashbrown/rayon", "plonky2_maybe_rayon/parallel"]
@@ -96,3 +97,5 @@ rustdoc-args = ["--html-in-header", ".cargo/katex-header.html"]
 
 [lints]
 workspace = true
+
+[build-dependencies]
