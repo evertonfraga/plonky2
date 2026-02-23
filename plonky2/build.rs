@@ -13,14 +13,18 @@ fn compile_cuda() {
     let lib_out = PathBuf::from(&out_dir).join("libposeidon2_gpu.a");
     let sm = detect_sm().unwrap_or_else(|| "sm_86".to_string());
     println!("cargo:warning=Compiling CUDA kernel for {}", sm);
+    // Compile CUDA device code + host wrappers into a shared object
+    // Using -shared instead of -lib to include host-side extern "C" functions
+    let so_out = PathBuf::from(&out_dir).join("libposeidon2_gpu.so");
     let status = Command::new("nvcc")
-        .args(["-O3", &format!("-arch={}", sm), "--compiler-options", "-fPIC",
-               "-lib", cu_src.to_str().unwrap(), "-o", lib_out.to_str().unwrap()])
+        .args(["-O3", &format!("-arch={}", sm), "-Xcompiler", "-fPIC",
+               "--shared", cu_src.to_str().unwrap(), "-o", so_out.to_str().unwrap()])
         .status()
         .expect("nvcc not found — install CUDA toolkit or build without --features gpu");
     assert!(status.success(), "nvcc compilation failed");
+    let lib_out = so_out; // use .so instead of .a
     println!("cargo:rustc-link-search=native={}", out_dir);
-    println!("cargo:rustc-link-lib=static=poseidon2_gpu");
+    println!("cargo:rustc-link-lib=dylib=poseidon2_gpu");
     // Find CUDA lib path dynamically
     let cuda_lib = std::process::Command::new("sh")
         .args(["-c", "find /usr/local/cuda*/targets/*/lib -name 'libcudart.so' 2>/dev/null | head -1 | xargs dirname"])
@@ -31,7 +35,6 @@ fn compile_cuda() {
         .unwrap_or_else(|| "/usr/local/cuda/lib64".to_string());
     println!("cargo:rustc-link-search=native={}", cuda_lib);
     println!("cargo:rustc-link-lib=cudart");
-    println!("cargo:rustc-link-lib=stdc++");
     println!("cargo:rerun-if-changed=src/hash/poseidon2/poseidon2_gpu.cu");
 }
 
