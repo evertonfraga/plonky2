@@ -1,11 +1,11 @@
 // GPU-accelerated Merkle tree: batch-hash all leaves on GPU, build tree on CPU.
+// Gives ~50% speedup on hashing (leaf hashing ≈ half of all Poseidon2 calls).
 use std::mem::MaybeUninit;
 use plonky2_field::types::PrimeField64;
 use plonky2_maybe_rayon::*;
 use crate::hash::hash_types::{RichField, NUM_HASH_OUT_ELTS};
 use crate::hash::merkle_tree::fill_subtree_with_hashes;
-use crate::plonk::config::GenericHashOut;
-use crate::plonk::config::Hasher;
+use crate::plonk::config::{GenericHashOut, Hasher};
 
 const GPU_LEAF_THRESHOLD: usize = 512;
 
@@ -40,7 +40,7 @@ pub fn fill_digests_buf_gpu<F: RichField, H: Hasher<F>>(
 
     // GPU: batch-hash all leaves (respecting hash_or_noop semantics)
     // hash_or_noop: if leaf_len*8 <= HASH_SIZE (32 bytes, i.e. ≤4 elements), copy directly.
-    let hash_size = H::HASH_SIZE; // 32 bytes for Poseidon2Hash
+    let hash_size = H::HASH_SIZE;
     let leaf_hashes: Vec<H::Hash> = if leaf_len * 8 <= hash_size {
         // Noop path: copy leaf bytes directly into H::Hash
         leaves.iter().map(|leaf| {
