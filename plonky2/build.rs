@@ -31,6 +31,7 @@ fn compile_cuda() {
         .unwrap_or_else(|| "/usr/local/cuda/lib64".to_string());
     println!("cargo:rustc-link-search=native={}", cuda_lib);
     println!("cargo:rustc-link-lib=cudart");
+    println!("cargo:rustc-link-lib=stdc++");
     println!("cargo:rerun-if-changed=src/hash/poseidon2/poseidon2_gpu.cu");
 }
 
