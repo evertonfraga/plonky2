@@ -42,14 +42,26 @@ pub trait Poseidon2: PrimeField64 {
     #[unroll::unroll_for_loops]
     fn partial_rounds(state: &mut [Self; WIDTH]) {
         for r in 0..ROUNDS_P {
+            // Fused: add round constant + sbox on state[0], then internal_linear_layer
+            // Avoids a separate pass over state for sum_12 by computing sum inline
             state[0] += Self::from_canonical_u64(INTERNAL_CONSTANTS[r]);
             state[0] = Self::sbox_p(&state[0]);
-            Self::internal_linear_layer(state);
+            // Fused internal_linear_layer: compute sum and MACs in one pass
+            // Safety: i < WIDTH = 12 = state.len()
+            let sum = sum_12(state);
+            for i in 0..WIDTH {
+                unsafe {
+                    *state.get_unchecked_mut(i) =
+                        sum.multiply_accumulate(*state.get_unchecked(i),
+                            Self::from_canonical_u64(*MATRIX_DIAG_12_U64.get_unchecked(i)));
+                }
+            }
         }
     }
 
     #[inline]
     #[unroll::unroll_for_loops]
+    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
     fn external_linear_layer(state: &mut [Self; WIDTH]) {
         let mut state_u128: [u128; WIDTH] = [0u128; WIDTH];
         for i in 0..WIDTH {
@@ -58,6 +70,15 @@ pub trait Poseidon2: PrimeField64 {
         external_linear_layer_u128(&mut state_u128);
         for i in 0..WIDTH {
             state[i] = Self::from_noncanonical_u128_with_96_bits(state_u128[i]);
+        }
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+    fn external_linear_layer(state: &mut [Self; WIDTH]) {
+        unsafe {
+            let state_f = &mut *(state as *mut [Self; WIDTH]
+                as *mut [crate::field::goldilocks_field::GoldilocksField; WIDTH]);
+            crate::hash::arch::aarch64::poseidon2_goldilocks_neon::external_linear_layer_neon(state_f);
         }
     }
 
