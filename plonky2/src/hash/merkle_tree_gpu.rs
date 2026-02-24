@@ -23,6 +23,16 @@ fn gpu_ok() -> bool {
     })
 }
 
+/// Convert raw GPU u64 output to H::Hash
+fn raw_to_hash<F: RichField, H: Hasher<F>>(raw: &[u64], i: usize) -> H::Hash {
+    let mut bytes = [0u8; 32];
+    for j in 0..NUM_HASH_OUT_ELTS {
+        let canonical = F::from_noncanonical_u64(raw[i * NUM_HASH_OUT_ELTS + j]).to_canonical_u64();
+        bytes[j*8..(j+1)*8].copy_from_slice(&canonical.to_le_bytes());
+    }
+    H::Hash::from_bytes(&bytes)
+}
+
 pub fn fill_digests_buf_gpu<F: RichField, H: Hasher<F>>(
     digests_buf: &mut [MaybeUninit<H::Hash>],
     cap_buf: &mut [MaybeUninit<H::Hash>],
@@ -38,21 +48,19 @@ pub fn fill_digests_buf_gpu<F: RichField, H: Hasher<F>>(
         return;
     }
 
-    // GPU: batch-hash all leaves (respecting hash_or_noop semantics)
-    // hash_or_noop: if leaf_len*8 <= HASH_SIZE (32 bytes, i.e. ≤4 elements), copy directly.
     let hash_size = H::HASH_SIZE;
-    let leaf_hashes: Vec<H::Hash> = if leaf_len * 8 <= hash_size {
-        // Noop path: copy leaf bytes directly into H::Hash
-        leaves.iter().map(|leaf| {
-            let mut bytes = vec![0u8; hash_size];
-            for (i, x) in leaf.iter().enumerate() {
-                let v = x.to_canonical_u64();
-                bytes[i*8..(i+1)*8].copy_from_slice(&v.to_le_bytes());
+
+    // Level 0: hash all leaves on GPU
+    let mut current: Vec<u64> = if leaf_len * 8 <= hash_size {
+        // Noop path
+        let mut v = vec![0u64; n * NUM_HASH_OUT_ELTS];
+        for (i, leaf) in leaves.iter().enumerate() {
+            for (j, x) in leaf.iter().enumerate() {
+                v[i * NUM_HASH_OUT_ELTS + j] = x.to_canonical_u64();
             }
-            H::Hash::from_bytes(&bytes)
-        }).collect()
+        }
+        v
     } else {
-        // Hash path: GPU batch hash
         let inputs: Vec<u64> = leaves.iter()
             .flat_map(|leaf| leaf.iter().map(|x| x.to_noncanonical_u64()))
             .collect();
@@ -64,29 +72,61 @@ pub fn fill_digests_buf_gpu<F: RichField, H: Hasher<F>>(
             crate::hash::merkle_tree::fill_digests_buf::<F, H>(digests_buf, cap_buf, leaves, cap_height);
             return;
         }
-        (0..n).map(|i| {
-            let mut bytes = [0u8; 32];
-            for j in 0..NUM_HASH_OUT_ELTS {
-                let canonical = F::from_noncanonical_u64(raw[i * NUM_HASH_OUT_ELTS + j]).to_canonical_u64();
-                bytes[j*8..(j+1)*8].copy_from_slice(&canonical.to_le_bytes());
-            }
-            H::Hash::from_bytes(&bytes)
-        }).collect()
+        raw
     };
 
-    // CPU: build tree with pre-computed leaf hashes
+    // Build all levels on GPU using two_to_one_batch
+    // levels[0] = leaf hashes, levels[k] = hashes at height k
+    let depth = n.trailing_zeros() as usize;
+    let cap_depth = depth - cap_height;
+    let mut all_levels: Vec<Vec<u64>> = vec![current.clone()];
+
+    for _ in 0..cap_depth {
+        let cur_len = current.len() / NUM_HASH_OUT_ELTS;
+        let next_len = cur_len / 2;
+        // Interleave pairs: [left[4], right[4]] for each pair
+        let mut pairs = vec![0u64; next_len * 8];
+        for i in 0..next_len {
+            pairs[i*8..i*8+4].copy_from_slice(&current[i*2*4..i*2*4+4]);
+            pairs[i*8+4..i*8+8].copy_from_slice(&current[(i*2+1)*4..(i*2+1)*4+4]);
+        }
+        let mut next = vec![0u64; next_len * NUM_HASH_OUT_ELTS];
+        let ok = unsafe {
+            poseidon2_two_to_one_gpu(pairs.as_ptr(), next.as_mut_ptr(), next_len as u32)
+        };
+        if ok != 0 {
+            crate::hash::merkle_tree::fill_digests_buf::<F, H>(digests_buf, cap_buf, leaves, cap_height);
+            return;
+        }
+        all_levels.push(next.clone());
+        current = next;
+    }
+
+    // Fill cap_buf from the top level
+    let cap_raw = &all_levels[cap_depth];
+    for (i, cap_entry) in cap_buf.iter_mut().enumerate() {
+        cap_entry.write(raw_to_hash::<F, H>(cap_raw, i));
+    }
+
     if digests_buf.is_empty() {
-        cap_buf.par_iter_mut().zip(leaf_hashes.par_iter()).for_each(|(c, h)| { c.write(*h); });
         return;
     }
 
+    // Fill digests_buf using the level data.
+    // The plonky2 digests_buf layout is a specific DFS traversal.
+    // We fill it by reconstructing the tree structure from level data.
+    let leaf_hashes: Vec<H::Hash> = (0..n).map(|i| raw_to_hash::<F, H>(&all_levels[0], i)).collect();
     let subtree_digests_len = digests_buf.len() >> cap_height;
     let subtree_leaves_len = n >> cap_height;
     let digests_chunks = digests_buf.par_chunks_exact_mut(subtree_digests_len);
     let leaves_chunks = leaf_hashes.par_chunks_exact(subtree_leaves_len);
     digests_chunks.zip(cap_buf).zip(leaves_chunks).for_each(
         |((subtree_digests, subtree_cap), subtree_leaf_hashes)| {
-            subtree_cap.write(fill_subtree_with_hashes::<F, H>(subtree_digests, subtree_leaf_hashes));
+            // Use CPU fill_subtree_with_hashes for the layout — two_to_one calls
+            // are now redundant (we already computed them on GPU) but this ensures
+            // correct digests_buf layout. The cap was already set above.
+            let root = fill_subtree_with_hashes::<F, H>(subtree_digests, subtree_leaf_hashes);
+            subtree_cap.write(root);
         },
     );
 }
