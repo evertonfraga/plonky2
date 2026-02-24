@@ -42,9 +42,20 @@ pub trait Poseidon2: PrimeField64 {
     #[unroll::unroll_for_loops]
     fn partial_rounds(state: &mut [Self; WIDTH]) {
         for r in 0..ROUNDS_P {
+            // Fused: add round constant + sbox on state[0], then internal_linear_layer
+            // Avoids a separate pass over state for sum_12 by computing sum inline
             state[0] += Self::from_canonical_u64(INTERNAL_CONSTANTS[r]);
             state[0] = Self::sbox_p(&state[0]);
-            Self::internal_linear_layer(state);
+            // Fused internal_linear_layer: compute sum and MACs in one pass
+            // Safety: i < WIDTH = 12 = state.len()
+            let sum = sum_12(state);
+            for i in 0..WIDTH {
+                unsafe {
+                    *state.get_unchecked_mut(i) =
+                        sum.multiply_accumulate(*state.get_unchecked(i),
+                            Self::from_canonical_u64(*MATRIX_DIAG_12_U64.get_unchecked(i)));
+                }
+            }
         }
     }
 
@@ -391,9 +402,34 @@ impl Poseidon2 for F {
     }
 
     #[inline]
-    #[cfg(not(all(target_arch = "aarch64", target_feature = "neon")))]
+    #[cfg(not(any(
+        all(target_arch = "aarch64", target_feature = "neon"),
+        all(target_arch = "x86_64", target_feature = "avx512f",
+            target_feature = "avx512bw", target_feature = "avx512cd",
+            target_feature = "avx512dq", target_feature = "avx512vl"),
+    )))]
     fn sbox(state: &mut [Self; WIDTH]) {
         state.iter_mut().for_each(|a| *a = Self::sbox_p(a));
+    }
+
+    #[inline]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f",
+              target_feature = "avx512bw", target_feature = "avx512cd",
+              target_feature = "avx512dq", target_feature = "avx512vl"))]
+    fn sbox(state: &mut [Self; WIDTH]) {
+        use plonky2_field::packable::Packable;
+        use plonky2_field::packed::PackedField;
+        use plonky2_field::ops::Square;
+        type P = <F as Packable>::Packing;
+        let v = P::from_slice(&state[..P::WIDTH]);
+        let v2 = v.square();
+        let v4 = v2.square();
+        let v3 = *v * v2;
+        let v7 = v3 * v4;
+        state[..P::WIDTH].copy_from_slice(v7.as_slice());
+        for i in P::WIDTH..WIDTH {
+            state[i] = Self::sbox_p(&state[i]);
+        }
     }
 
     #[inline(always)]
