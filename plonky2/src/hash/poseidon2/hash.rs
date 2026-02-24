@@ -39,13 +39,39 @@ pub trait Poseidon2: PrimeField64 {
     }
 
     #[inline]
-    #[unroll::unroll_for_loops]
     fn partial_rounds(state: &mut [Self; WIDTH]) {
-        for r in 0..ROUNDS_P {
-            state[0] += Self::from_canonical_u64(INTERNAL_CONSTANTS[r]);
-            state[0] = Self::sbox_p(&state[0]);
-            Self::internal_linear_layer(state);
+        // Partial round batching: 2 rounds at a time.
+        // state[i]'' = (sum'' + d[i]*sum') + d[i]^2*state[i]  for i>0
+        // state[0]'' = sum'' + d[0]*s0''
+        // Saves 1 sum_12 per pair = 11 sum_12 calls over 22 rounds.
+        const DIAG_SQ: [u64; WIDTH] = [0x6dd62de9756a8673, 0x5dfe29c1e6d0dc3c, 0x8ea2b3abe6f4361d, 0x7a69b052ecfb7384, 0x40878557b085260c, 0x7161fdc42027f4cd, 0xc1d2b534e067f575, 0x9ef93947b5180314, 0x88ae2b96840116ad, 0x170a282b98a60e56, 0x7a0a6d09a8244ef6, 0x1a31aae90ea444d5];
+        let mut r = 0;
+        while r + 1 < ROUNDS_P {
+            // Round r
+            let s0_prime = Self::sbox_p(&(state[0] + Self::from_canonical_u64(INTERNAL_CONSTANTS[r])));
+            let mut sum_prime_u128 = s0_prime.to_noncanonical_u64() as u128;
+            for j in 1..WIDTH { sum_prime_u128 += state[j].to_noncanonical_u64() as u128; }
+            let sum_prime = Self::from_noncanonical_u128_with_96_bits(sum_prime_u128);
+            // Σ_{j>0} d[j]*state[j] for sum'' formula
+            let mut diag_sum = Self::ZERO;
+            for j in 1..WIDTH {
+                diag_sum += Self::from_noncanonical_u128(
+                    (state[j].to_noncanonical_u64() as u128) * (MATRIX_DIAG_12_U64[j] as u128));
+            }
+            let state0_prime = sum_prime.multiply_accumulate(s0_prime, Self::from_canonical_u64(MATRIX_DIAG_12_U64[0]));
+            // Round r+1
+            let s0_dbl = Self::sbox_p(&(state0_prime + Self::from_canonical_u64(INTERNAL_CONSTANTS[r + 1])));
+            let sum_dbl = s0_dbl
+                + sum_prime * Self::from_canonical_u64((WIDTH - 1) as u64)
+                + diag_sum;
+            state[0] = sum_dbl.multiply_accumulate(s0_dbl, Self::from_canonical_u64(MATRIX_DIAG_12_U64[0]));
+            for i in 1..WIDTH {
+                let coeff = sum_dbl + sum_prime * Self::from_canonical_u64(MATRIX_DIAG_12_U64[i]);
+                state[i] = coeff.multiply_accumulate(state[i], Self::from_canonical_u64(DIAG_SQ[i]));
+            }
+            r += 2;
         }
+        // ROUNDS_P=22 is even, so no remainder
     }
 
     #[inline]
