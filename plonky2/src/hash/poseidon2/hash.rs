@@ -41,10 +41,21 @@ pub trait Poseidon2: PrimeField64 {
     #[inline]
     #[unroll::unroll_for_loops]
     fn partial_rounds(state: &mut [Self; WIDTH]) {
+        // Running sum: maintain Σstate across rounds, adjust for sbox change each round.
+        // Saves sum_12 (12 adds + 1 reduce) per round, replaced by 1 sub + 1 add.
+        let mut running_sum = sum_12(state);
         for r in 0..ROUNDS_P {
+            let old_s0 = state[0];
             state[0] += Self::from_canonical_u64(INTERNAL_CONSTANTS[r]);
             state[0] = Self::sbox_p(&state[0]);
-            Self::internal_linear_layer(state);
+            let sum = running_sum - old_s0 + state[0];
+            let mut acc = 0u128;
+            for i in 0..WIDTH {
+                let v = sum.multiply_accumulate(state[i], Self::from_canonical_u64(MATRIX_DIAG_12_U64[i]));
+                acc += v.to_noncanonical_u64() as u128;
+                state[i] = v;
+            }
+            running_sum = Self::from_noncanonical_u128_with_96_bits(acc);
         }
     }
 
