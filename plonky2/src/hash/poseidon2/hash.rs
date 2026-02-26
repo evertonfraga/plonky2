@@ -39,12 +39,29 @@ pub trait Poseidon2: PrimeField64 {
     }
 
     #[inline]
-    #[unroll::unroll_for_loops]
     fn partial_rounds(state: &mut [Self; WIDTH]) {
+        // Deferred reduction: maintain running sum as u128, update with plain
+        // integer arithmetic (branchless) instead of field ops. Reduce to u64
+        // only when needed for multiply_accumulate.
+        let mut rsum: u128 = 0;
+        for i in 0..WIDTH {
+            rsum += state[i].to_noncanonical_u64() as u128;
+        }
         for r in 0..ROUNDS_P {
+            let old_s0 = state[0].to_noncanonical_u64() as u128;
             state[0] += Self::from_canonical_u64(INTERNAL_CONSTANTS[r]);
             state[0] = Self::sbox_p(&state[0]);
-            Self::internal_linear_layer(state);
+            let new_s0 = state[0].to_noncanonical_u64() as u128;
+            // u128 add/sub: branchless, no conditional EPSILON adjustment
+            rsum = rsum - old_s0 + new_s0;
+            let sum = Self::from_noncanonical_u128_with_96_bits(rsum);
+            let mut acc = 0u128;
+            for i in 0..WIDTH {
+                let v = sum.multiply_accumulate(state[i], Self::from_canonical_u64(MATRIX_DIAG_12_U64[i]));
+                acc += v.to_noncanonical_u64() as u128;
+                state[i] = v;
+            }
+            rsum = acc;
         }
     }
 
