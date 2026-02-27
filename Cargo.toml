@@ -30,4 +30,6 @@ too_long_first_doc_paragraph = "allow"
 
 [profile.release]
 lto = "thin"
+codegen-units = 1
+panic = "abort"
 incremental = false
