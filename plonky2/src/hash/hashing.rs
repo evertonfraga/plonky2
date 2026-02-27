@@ -89,6 +89,13 @@ pub trait PlonkyPermutation<T: Copy + Default>:
     /// Apply permutation to internal state
     fn permute(&mut self);
 
+    /// Interleaved permutation: process two independent states simultaneously.
+    /// Default implementation just calls permute twice; override for interleaving.
+    fn permute_x2(a: &mut Self, b: &mut Self) {
+        a.permute();
+        b.permute();
+    }
+
     /// Return a slice of `RATE` elements
     fn squeeze(&self) -> &[T];
 }
@@ -111,6 +118,27 @@ pub fn compress<F: Field, P: PlonkyPermutation<F>>(x: HashOut<F>, y: HashOut<F>)
     HashOut {
         elements: perm.squeeze()[..NUM_HASH_OUT_ELTS].try_into().unwrap(),
     }
+}
+
+/// Interleaved compression: process two independent compress calls simultaneously.
+pub fn compress_x2<F: Field, P: PlonkyPermutation<F>>(
+    x1: HashOut<F>, y1: HashOut<F>,
+    x2: HashOut<F>, y2: HashOut<F>,
+) -> (HashOut<F>, HashOut<F>) {
+    let mut perm1 = P::new(core::iter::repeat(F::ZERO));
+    perm1.set_from_slice(&x1.elements, 0);
+    perm1.set_from_slice(&y1.elements, NUM_HASH_OUT_ELTS);
+
+    let mut perm2 = P::new(core::iter::repeat(F::ZERO));
+    perm2.set_from_slice(&x2.elements, 0);
+    perm2.set_from_slice(&y2.elements, NUM_HASH_OUT_ELTS);
+
+    P::permute_x2(&mut perm1, &mut perm2);
+
+    (
+        HashOut { elements: perm1.squeeze()[..NUM_HASH_OUT_ELTS].try_into().unwrap() },
+        HashOut { elements: perm2.squeeze()[..NUM_HASH_OUT_ELTS].try_into().unwrap() },
+    )
 }
 
 /// Hash a message without any padding step. Note that this can enable length-extension attacks.
