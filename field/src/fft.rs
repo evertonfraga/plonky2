@@ -1,3 +1,4 @@
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::{max, min};
 
@@ -41,7 +42,15 @@ fn fft_dispatch<F: Field>(
     let computed_root_table = root_table.is_none().then(|| fft_root_table(input.len()));
     let used_root_table = root_table.or(computed_root_table.as_ref()).unwrap();
 
-    fft_classic(input, zero_factor.unwrap_or(0), used_root_table);
+    let lg_n = log2_strict(input.len());
+    let r = zero_factor.unwrap_or(0);
+    // Use four-step FFT for large transforms where cache misses dominate.
+    // Threshold: N >= 2^14 (128KB working set for u64 elements).
+    if lg_n >= 14 && r == 0 {
+        fft_four_step(input, used_root_table);
+    } else {
+        fft_classic(input, r, used_root_table);
+    }
 }
 
 #[inline]
@@ -151,6 +160,78 @@ fn fft_classic_simd<P: PackedField>(
                 let u = packed_values[k + j];
                 packed_values[k + j] = u + t;
                 packed_values[k + half_packed_m + j] = u - t;
+            }
+        }
+    }
+}
+
+/// Four-step FFT for cache-friendly large transforms.
+/// Decomposes N = N1 × N2, does row DFTs (fit in cache), twiddle, transpose,
+/// column DFTs (fit in cache), transpose back. Eliminates cache-miss butterfly
+/// stages that dominate large classic FFTs.
+fn fft_four_step<F: Field>(values: &mut [F], root_table: &FftRootTable<F>) {
+    let n = values.len();
+    let lg_n = log2_strict(n);
+
+    // Split: N1 rows × N2 cols, N2 >= N1
+    let lg_n1 = lg_n / 2;
+    let lg_n2 = lg_n - lg_n1;
+    let n1 = 1usize << lg_n1;
+    let n2 = 1usize << lg_n2;
+
+    // Build sub-FFT root tables
+    let rt2 = fft_root_table::<F>(n2);
+    let rt1 = fft_root_table::<F>(n1);
+
+    // Step 1: FFT each row (length N2, contiguous in memory)
+    for i in 0..n1 {
+        let row = &mut values[i * n2..(i + 1) * n2];
+        fft_classic(row, 0, &rt2);
+    }
+
+    // Step 2: Twiddle factors — multiply element [i][j] by w_N^(i*j)
+    // w_N = primitive N-th root of unity
+    // Use root_table[lg_n - 1] which contains w_N^0, w_N^1, ..., w_N^(N/2-1)
+    // But we need w_N^(i*j) for i=0..N1, j=0..N2.
+    // Compute row-by-row: for row i, multiply col j by w_N^(i*j).
+    let g = F::primitive_root_of_unity(lg_n);
+    for i in 1..n1 {
+        let gi = g.exp_u64(i as u64); // w_N^i
+        let mut w = gi; // w_N^(i*1) — skip j=0 (w^0 = 1)
+        for j in 1..n2 {
+            values[i * n2 + j] *= w;
+            w *= gi;
+        }
+    }
+
+    // Step 3: Transpose N1 × N2 → N2 × N1 (cache-friendly tiled transpose)
+    let mut scratch = vec![F::ZERO; n];
+    transpose_rect(values, &mut scratch, n1, n2);
+    values.copy_from_slice(&scratch);
+
+    // Step 4: FFT each row of transposed matrix (length N1, contiguous)
+    for j in 0..n2 {
+        let row = &mut values[j * n1..(j + 1) * n1];
+        fft_classic(row, 0, &rt1);
+    }
+
+    // Step 5: Transpose back N2 × N1 → N1 × N2
+    transpose_rect(values, &mut scratch, n2, n1);
+    values.copy_from_slice(&scratch);
+}
+
+/// Cache-friendly tiled matrix transpose: src[rows × cols] → dst[cols × rows]
+#[inline]
+fn transpose_rect<F: Copy>(src: &[F], dst: &mut [F], rows: usize, cols: usize) {
+    const TILE: usize = 64; // 64 elements × 8 bytes = 512 bytes, fits in L1 cache line
+    for i0 in (0..rows).step_by(TILE) {
+        for j0 in (0..cols).step_by(TILE) {
+            let i_end = (i0 + TILE).min(rows);
+            let j_end = (j0 + TILE).min(cols);
+            for i in i0..i_end {
+                for j in j0..j_end {
+                    dst[j * rows + i] = src[i * cols + j];
+                }
             }
         }
     }
