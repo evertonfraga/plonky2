@@ -413,6 +413,13 @@ impl Poseidon2 for F {
             crate::hash::arch::aarch64::poseidon_goldilocks_neon::sbox_layer(state);
         }
     }
+
+    #[inline]
+    #[cfg(all(target_arch = "aarch64", target_feature = "sve"))]
+    fn internal_linear_layer(state: &mut [Self; WIDTH]) {
+        let sum = sum_12(state);
+        unsafe { sve_internal_linear_layer(state, sum) };
+    }
 }
 
 #[derive(Copy, Clone, Default, Debug, PartialEq)]
@@ -485,6 +492,95 @@ impl<T: Copy + Debug + Default + Eq + Permuter + Send + Sync> PlonkyPermutation<
 
 #[inline]
 /// Sum of 12 elements to u128; unrolled for performance.
+
+/// SVE 256-bit internal_linear_layer: processes 4 multiply-accumulates per iteration.
+/// state[i] = sum + DIAG[i] * state[i], with Goldilocks field reduction.
+/// Graviton3 has 256-bit SVE (4×u64). Graviton4 has 128-bit SVE (2×u64).
+#[cfg(all(target_arch = "aarch64", target_feature = "sve"))]
+#[inline(always)]
+unsafe fn sve_internal_linear_layer(
+    state: &mut [crate::field::goldilocks_field::GoldilocksField; WIDTH],
+    sum: crate::field::goldilocks_field::GoldilocksField,
+) {
+    use crate::field::types::PrimeField64;
+    use core::arch::asm;
+
+    let state_ptr = state.as_mut_ptr() as *mut u64;
+    let diag_ptr = MATRIX_DIAG_12_U64.as_ptr();
+    let sum_val = sum.to_noncanonical_u64();
+    const EPSILON: u64 = 0xFFFF_FFFF_u64;
+
+    // Process all 12 elements using SVE. The vector length determines how many
+    // per iteration (4 on Graviton3 256-bit, 2 on Graviton4 128-bit).
+    // We use a predicated loop that handles any VL automatically.
+    asm!(
+        // Set up constants
+        "mov    {eps}, #0xFFFFFFFF",          // EPSILON
+        "dup    z30.d, {eps}",                // z30 = broadcast EPSILON
+        "dup    z31.d, {sum}",                // z31 = broadcast sum
+
+        // Predicated loop over 12 elements
+        "mov    {idx}, #0",                   // loop index
+        "whilelo p0.d, {idx}, {count}",       // p0 = active lanes
+
+        "2:",
+        // Load state[i] and diag[i]
+        "ld1d   z0.d, p0/z, [{state}, {idx}, lsl #3]",
+        "ld1d   z1.d, p0/z, [{diag}, {idx}, lsl #3]",
+
+        // 64-bit multiply: lo = state * diag, hi = umulh(state, diag)
+        // SVE (not SVE2): must use predicated forms
+        "movprfx z2, z0",
+        "mul    z2.d, p0/m, z2.d, z1.d",     // z2 = product_lo
+        "movprfx z3, z0",
+        "umulh  z3.d, p0/m, z3.d, z1.d",     // z3 = product_hi
+
+        // reduce128: (product_lo, product_hi) → Goldilocks
+        // hi_hi = product_hi >> 32
+        "lsr    z4.d, z3.d, #32",            // z4 = hi_hi
+        // hi_lo = product_hi & EPSILON
+        "and    z5.d, z3.d, z30.d",          // z5 = hi_lo
+
+        // t0 = product_lo - hi_hi (with borrow → subtract EPSILON)
+        "sub    z6.d, z2.d, z4.d",           // z6 = lo - hi_hi (may wrap)
+        "cmphi  p1.d, p0/z, z4.d, z2.d",    // p1 = hi_hi > lo (borrow)
+        "sub    z6.d, p1/m, z6.d, z30.d",   // if borrow: z6 -= EPSILON
+
+        // t1 = hi_lo * EPSILON (u32 × u32 → u64, no overflow)
+        "movprfx z7, z5",
+        "mul    z7.d, p0/m, z7.d, z30.d",    // z7 = hi_lo * EPSILON
+
+        // result = t0 + t1 (with wraparound)
+        "add    z6.d, z6.d, z7.d",           // z6 = t0 + t1
+        "cmphi  p1.d, p0/z, z7.d, z6.d",    // p1 = overflow (t1 > result)
+        "add    z6.d, p1/m, z6.d, z30.d",   // if overflow: z6 += EPSILON
+
+        // result += sum (with wraparound)
+        "add    z6.d, z6.d, z31.d",          // z6 += sum
+        "cmphi  p1.d, p0/z, z31.d, z6.d",   // p1 = overflow
+        "add    z6.d, p1/m, z6.d, z30.d",   // if overflow: z6 += EPSILON
+
+        // Store result
+        "st1d   z6.d, p0, [{state}, {idx}, lsl #3]",
+
+        // Advance loop
+        "incd   {idx}",                       // idx += VL/64
+        "whilelo p0.d, {idx}, {count}",       // update predicate
+        "b.first 2b",                         // loop if any active lanes
+
+        state = in(reg) state_ptr,
+        diag = in(reg) diag_ptr,
+        sum = in(reg) sum_val,
+        count = in(reg) 12_u64,
+        idx = out(reg) _,
+        eps = out(reg) _,
+        out("z0") _, out("z1") _, out("z2") _, out("z3") _,
+        out("z4") _, out("z5") _, out("z6") _, out("z7") _,
+        out("z30") _, out("z31") _,
+        out("p0") _, out("p1") _,
+        options(nostack),
+    );
+}
 fn sum_12<F: PrimeField64>(inputs: &[F]) -> F {
     debug_assert!(inputs.len() == 12);
     let tmp = inputs[0].to_noncanonical_u64() as u128
