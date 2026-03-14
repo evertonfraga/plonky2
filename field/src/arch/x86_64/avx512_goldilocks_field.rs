@@ -355,13 +355,79 @@ unsafe fn reduce128(x: (__m512i, __m512i)) -> __m512i {
 }
 
 #[inline]
+#[cfg(not(target_feature = "avx512ifma"))]
 unsafe fn mul(x: __m512i, y: __m512i) -> __m512i {
     reduce128(mul64_64(x, y))
 }
 
 #[inline]
+#[cfg(not(target_feature = "avx512ifma"))]
 unsafe fn square(x: __m512i) -> __m512i {
     reduce128(square64(x))
+}
+
+const MASK52: __m512i = unsafe { transmute([((1u64 << 52) - 1); 8]) };
+
+#[inline]
+#[cfg(target_feature = "avx512ifma")]
+unsafe fn mul(x: __m512i, y: __m512i) -> __m512i {
+    let zero = _mm512_setzero_si512();
+    let x_lo = _mm512_and_si512(x, MASK52);
+    let x_hi = _mm512_srli_epi64::<52>(x);
+    let y_lo = _mm512_and_si512(y, MASK52);
+    let y_hi = _mm512_srli_epi64::<52>(y);
+
+    // 4 independent partial products (all lo+hi pairs)
+    let p0_lo = _mm512_madd52lo_epu64(zero, x_lo, y_lo);
+    let p0_hi = _mm512_madd52hi_epu64(zero, x_lo, y_lo);
+    let p1a_lo = _mm512_madd52lo_epu64(zero, x_lo, y_hi);
+    let p1a_hi = _mm512_madd52hi_epu64(zero, x_lo, y_hi);
+    let p1b_lo = _mm512_madd52lo_epu64(zero, x_hi, y_lo);
+    let p1b_hi = _mm512_madd52hi_epu64(zero, x_hi, y_lo);
+    let p2 = _mm512_madd52lo_epu64(zero, x_hi, y_hi);
+
+    // Assemble 128-bit result in radix-2^52: c0 + c1*2^52 + c2*2^104
+    let c0 = p0_lo;
+    let c1 = _mm512_add_epi64(_mm512_add_epi64(p0_hi, p1a_lo), p1b_lo);
+    let c2 = _mm512_add_epi64(_mm512_add_epi64(p1a_hi, p1b_hi), p2);
+
+    // Carry c1 -> c2
+    let c1_carry = _mm512_srli_epi64::<52>(c1);
+    let c1 = _mm512_and_si512(c1, MASK52);
+    let c2 = _mm512_add_epi64(c2, c1_carry);
+
+    // Reconstruct hi:lo 64-bit pair
+    let res_lo = _mm512_or_si512(c0, _mm512_slli_epi64::<52>(c1));
+    let res_hi = _mm512_or_si512(_mm512_srli_epi64::<12>(c1), _mm512_slli_epi64::<40>(c2));
+
+    reduce128((res_hi, res_lo))
+}
+
+#[inline]
+#[cfg(target_feature = "avx512ifma")]
+unsafe fn square(x: __m512i) -> __m512i {
+    let zero = _mm512_setzero_si512();
+    let x_lo = _mm512_and_si512(x, MASK52);
+    let x_hi = _mm512_srli_epi64::<52>(x);
+
+    let p0_lo = _mm512_madd52lo_epu64(zero, x_lo, x_lo);
+    let p0_hi = _mm512_madd52hi_epu64(zero, x_lo, x_lo);
+    let p1_lo = _mm512_madd52lo_epu64(zero, x_lo, x_hi);
+    let p1_hi = _mm512_madd52hi_epu64(zero, x_lo, x_hi);
+    let p2 = _mm512_madd52lo_epu64(zero, x_hi, x_hi);
+
+    let c0 = p0_lo;
+    let c1 = _mm512_add_epi64(p0_hi, _mm512_add_epi64(p1_lo, p1_lo));
+    let c2 = _mm512_add_epi64(_mm512_add_epi64(p1_hi, p1_hi), p2);
+
+    let c1_carry = _mm512_srli_epi64::<52>(c1);
+    let c1 = _mm512_and_si512(c1, MASK52);
+    let c2 = _mm512_add_epi64(c2, c1_carry);
+
+    let res_lo = _mm512_or_si512(c0, _mm512_slli_epi64::<52>(c1));
+    let res_hi = _mm512_or_si512(_mm512_srli_epi64::<12>(c1), _mm512_slli_epi64::<40>(c2));
+
+    reduce128((res_hi, res_lo))
 }
 
 #[inline]
