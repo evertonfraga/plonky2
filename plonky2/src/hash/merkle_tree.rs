@@ -102,13 +102,34 @@ pub(crate) fn fill_subtree<F: RichField, H: Hasher<F>>(
         let (left_leaves, right_leaves) = leaves.split_at(leaves.len() / 2);
 
         let (left_digest, right_digest) = plonky2_maybe_rayon::join(
-            || fill_subtree::<F, H>(left_digests_buf, left_leaves),
-            || fill_subtree::<F, H>(right_digests_buf, right_leaves),
+            || {
+                prefetch_leaves(right_leaves);
+                fill_subtree::<F, H>(left_digests_buf, left_leaves)
+            },
+            || {
+                prefetch_leaves(left_leaves);
+                fill_subtree::<F, H>(right_digests_buf, right_leaves)
+            },
         );
 
         left_digest_mem.write(left_digest);
         right_digest_mem.write(right_digest);
         H::two_to_one(left_digest, right_digest)
+    }
+}
+
+/// Prefetch leaf data for an upcoming subtree to hide memory latency.
+#[inline(always)]
+fn prefetch_leaves<F>(leaves: &[Vec<F>]) {
+    let len = leaves.len();
+    if len == 0 { return; }
+    let indices = [0, len / 3, 2 * len / 3, len - 1];
+    for &i in &indices {
+        let p = leaves[i].as_ptr() as *const i8;
+        #[cfg(target_arch = "aarch64")]
+        unsafe { core::arch::aarch64::_prefetch(p, 0, 3); }
+        #[cfg(target_arch = "x86_64")]
+        unsafe { core::arch::x86_64::_mm_prefetch(p, core::arch::x86_64::_MM_HINT_T0); }
     }
 }
 
