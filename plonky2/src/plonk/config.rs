@@ -75,6 +75,14 @@ pub trait Hasher<F: RichField>: Sized + Copy + Debug + Eq + PartialEq {
     }
 
     fn two_to_one(left: Self::Hash, right: Self::Hash) -> Self::Hash;
+
+    /// Interleaved two_to_one: process two independent hash pairs simultaneously.
+    fn two_to_one_x2(
+        l1: Self::Hash, r1: Self::Hash,
+        l2: Self::Hash, r2: Self::Hash,
+    ) -> (Self::Hash, Self::Hash) {
+        (Self::two_to_one(l1, r1), Self::two_to_one(l2, r2))
+    }
 }
 
 /// Trait for algebraic hash functions, built from a permutation using the sponge construction.

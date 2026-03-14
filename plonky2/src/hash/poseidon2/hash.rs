@@ -8,7 +8,7 @@ use crate::field::goldilocks_field::GoldilocksField as F;
 use crate::field::types::{Field, PrimeField64};
 use crate::gates::poseidon2::Poseidon2Gate;
 use crate::hash::hash_types::{HashOut, RichField};
-use crate::hash::hashing::{compress, hash_n_to_hash_no_pad, PlonkyPermutation};
+use crate::hash::hashing::{compress, compress_x2, hash_n_to_hash_no_pad, PlonkyPermutation};
 use crate::iop::ext_target::ExtensionTarget;
 use crate::iop::target::{BoolTarget, Target};
 use crate::plonk::circuit_builder::CircuitBuilder;
@@ -26,6 +26,46 @@ pub trait Poseidon2: PrimeField64 {
         Self::full_rounds(&mut state, ROUNDS_F_HALF);
 
         state
+    }
+
+    /// Interleaved permutation: process two independent hashes simultaneously.
+    /// Hides multiply dependency latency by interleaving rounds of A and B.
+    #[inline]
+    fn poseidon2_x2(a: [Self; WIDTH], b: [Self; WIDTH]) -> ([Self; WIDTH], [Self; WIDTH]) {
+        let mut a = a;
+        let mut b = b;
+
+        Self::external_linear_layer(&mut a);
+        Self::external_linear_layer(&mut b);
+
+        for r in 0..ROUNDS_F_HALF {
+            Self::add_rc(&mut a, r);
+            Self::add_rc(&mut b, r);
+            Self::sbox(&mut a);
+            Self::sbox(&mut b);
+            Self::external_linear_layer(&mut a);
+            Self::external_linear_layer(&mut b);
+        }
+
+        for r in 0..ROUNDS_P {
+            a[0] += Self::from_canonical_u64(INTERNAL_CONSTANTS[r]);
+            b[0] += Self::from_canonical_u64(INTERNAL_CONSTANTS[r]);
+            a[0] = Self::sbox_p(&a[0]);
+            b[0] = Self::sbox_p(&b[0]);
+            Self::internal_linear_layer(&mut a);
+            Self::internal_linear_layer(&mut b);
+        }
+
+        for r in ROUNDS_F_HALF..(ROUNDS_F_HALF + ROUNDS_F_HALF) {
+            Self::add_rc(&mut a, r);
+            Self::add_rc(&mut b, r);
+            Self::sbox(&mut a);
+            Self::sbox(&mut b);
+            Self::external_linear_layer(&mut a);
+            Self::external_linear_layer(&mut b);
+        }
+
+        (a, b)
     }
 
     #[inline]
@@ -420,11 +460,17 @@ impl<T> AsRef<[T]> for Poseidon2Permutation<T> {
 
 trait Permuter: Sized {
     fn permute(input: [Self; WIDTH]) -> [Self; WIDTH];
+    fn permute_x2(a: [Self; WIDTH], b: [Self; WIDTH]) -> ([Self; WIDTH], [Self; WIDTH]) {
+        (Self::permute(a), Self::permute(b))
+    }
 }
 
 impl<F: Poseidon2> Permuter for F {
     fn permute(input: [Self; WIDTH]) -> [Self; WIDTH] {
         <F as Poseidon2>::poseidon2(input)
+    }
+    fn permute_x2(a: [Self; WIDTH], b: [Self; WIDTH]) -> ([Self; WIDTH], [Self; WIDTH]) {
+        <F as Poseidon2>::poseidon2_x2(a, b)
     }
 }
 
@@ -468,6 +514,12 @@ impl<T: Copy + Debug + Default + Eq + Permuter + Send + Sync> PlonkyPermutation<
         self.state = T::permute(self.state);
     }
 
+    fn permute_x2(a: &mut Self, b: &mut Self) {
+        let (ra, rb) = T::permute_x2(a.state, b.state);
+        a.state = ra;
+        b.state = rb;
+    }
+
     fn squeeze(&self) -> &[T] {
         &self.state[..Self::RATE]
     }
@@ -507,6 +559,13 @@ impl<F: RichField + Poseidon2> Hasher<F> for Poseidon2Hash {
 
     fn two_to_one(left: Self::Hash, right: Self::Hash) -> Self::Hash {
         compress::<F, Self::Permutation>(left, right)
+    }
+
+    fn two_to_one_x2(
+        l1: Self::Hash, r1: Self::Hash,
+        l2: Self::Hash, r2: Self::Hash,
+    ) -> (Self::Hash, Self::Hash) {
+        compress_x2::<F, Self::Permutation>(l1, r1, l2, r2)
     }
 }
 

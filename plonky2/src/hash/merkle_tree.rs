@@ -90,21 +90,78 @@ pub(crate) fn fill_subtree<F: RichField, H: Hasher<F>>(
     assert_eq!(leaves.len(), digests_buf.len() / 2 + 1);
     if digests_buf.is_empty() {
         H::hash_or_noop(&leaves[0])
-    } else {
-        // Layout is: left recursive output || left child digest
-        //             || right child digest || right recursive output.
-        // Split `digests_buf` into the two recursive outputs (slices) and two child digests
-        // (references).
-        let (left_digests_buf, right_digests_buf) = digests_buf.split_at_mut(digests_buf.len() / 2);
-        let (left_digest_mem, left_digests_buf) = left_digests_buf.split_last_mut().unwrap();
-        let (right_digest_mem, right_digests_buf) = right_digests_buf.split_first_mut().unwrap();
-        // Split `leaves` between both children.
+    } else if leaves.len() >= 4 {
+        // 4-way split: recurse into 4 grandchildren, then interleave the two
+        // two_to_one calls at this level via two_to_one_x2.
+        //
+        // Tree structure:
+        //         this_node
+        //        /         \
+        //    left_child   right_child     ← these two hashes are interleaved
+        //    /    \        /    \
+        //  ll     lr     rl     rr        ← 4 recursive calls
+
+        // First split into left/right halves (same as original)
+        let (left_buf, right_buf) = digests_buf.split_at_mut(digests_buf.len() / 2);
+        let (left_digest_mem, left_buf) = left_buf.split_last_mut().unwrap();
+        let (right_digest_mem, right_buf) = right_buf.split_first_mut().unwrap();
         let (left_leaves, right_leaves) = leaves.split_at(leaves.len() / 2);
 
-        let (left_digest, right_digest) = plonky2_maybe_rayon::join(
-            || fill_subtree::<F, H>(left_digests_buf, left_leaves),
-            || fill_subtree::<F, H>(right_digests_buf, right_leaves),
-        );
+        // Split left half into ll/lr
+        let (ll_buf, lr_buf) = left_buf.split_at_mut(left_buf.len() / 2);
+        let (ll_digest_mem, ll_buf) = ll_buf.split_last_mut().unwrap();
+        let (lr_digest_mem, lr_buf) = lr_buf.split_first_mut().unwrap();
+        let (ll_leaves, lr_leaves) = left_leaves.split_at(left_leaves.len() / 2);
+
+        // Split right half into rl/rr
+        let (rl_buf, rr_buf) = right_buf.split_at_mut(right_buf.len() / 2);
+        let (rl_digest_mem, rl_buf) = rl_buf.split_last_mut().unwrap();
+        let (rr_digest_mem, rr_buf) = rr_buf.split_first_mut().unwrap();
+        let (rl_leaves, rr_leaves) = right_leaves.split_at(right_leaves.len() / 2);
+
+        // Recurse into 4 grandchildren
+        let (ll_hash, lr_hash, rl_hash, rr_hash) = if leaves.len() > 16 {
+            let ((ll_h, lr_h), (rl_h, rr_h)) = plonky2_maybe_rayon::join(
+                || {
+                    let ll = fill_subtree::<F, H>(ll_buf, ll_leaves);
+                    let lr = fill_subtree::<F, H>(lr_buf, lr_leaves);
+                    (ll, lr)
+                },
+                || {
+                    let rl = fill_subtree::<F, H>(rl_buf, rl_leaves);
+                    let rr = fill_subtree::<F, H>(rr_buf, rr_leaves);
+                    (rl, rr)
+                },
+            );
+            (ll_h, lr_h, rl_h, rr_h)
+        } else {
+            let ll = fill_subtree::<F, H>(ll_buf, ll_leaves);
+            let lr = fill_subtree::<F, H>(lr_buf, lr_leaves);
+            let rl = fill_subtree::<F, H>(rl_buf, rl_leaves);
+            let rr = fill_subtree::<F, H>(rr_buf, rr_leaves);
+            (ll, lr, rl, rr)
+        };
+
+        ll_digest_mem.write(ll_hash);
+        lr_digest_mem.write(lr_hash);
+        rl_digest_mem.write(rl_hash);
+        rr_digest_mem.write(rr_hash);
+
+        // Interleaved: compute left_child and right_child hashes simultaneously
+        let (left_hash, right_hash) = H::two_to_one_x2(ll_hash, lr_hash, rl_hash, rr_hash);
+
+        left_digest_mem.write(left_hash);
+        right_digest_mem.write(right_hash);
+        H::two_to_one(left_hash, right_hash)
+    } else {
+        // leaves.len() == 2: simple case, no interleaving possible
+        let (left_buf, right_buf) = digests_buf.split_at_mut(digests_buf.len() / 2);
+        let (left_digest_mem, left_buf) = left_buf.split_last_mut().unwrap();
+        let (right_digest_mem, right_buf) = right_buf.split_first_mut().unwrap();
+        let (left_leaves, right_leaves) = leaves.split_at(leaves.len() / 2);
+
+        let left_digest = fill_subtree::<F, H>(left_buf, left_leaves);
+        let right_digest = fill_subtree::<F, H>(right_buf, right_leaves);
 
         left_digest_mem.write(left_digest);
         right_digest_mem.write(right_digest);
